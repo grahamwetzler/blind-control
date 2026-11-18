@@ -473,3 +473,29 @@ async def test_template_condition_tracks_referenced_entities(hass: HomeAssistant
     await hass.async_block_till_done()
     assert hass.states.get("sensor.living_room_status").state == "rule"
     assert calls[-1].data["position"] == 20
+
+
+async def test_wide_tolerance_still_delivers(hass: HomeAssistant, setup) -> None:
+    """Regression: manual-detection tolerance must not mark a target as delivered."""
+    do_setup, calls = setup
+    await do_setup(options=_options(tolerance=20), subentries=[rule("Midday", 85)])
+    assert calls[-1].data["position"] == 85
+
+
+async def test_new_target_while_moving_is_sent(
+    hass: HomeAssistant, setup, freezer: FrozenDateTimeFactory
+) -> None:
+    """Regression: a target change during travel is not deferred to the next interval."""
+    do_setup, _ = setup
+    hass.services.async_remove("cover", "set_cover_position")
+    sent: list[ServiceCall] = []
+    hass.services.async_register("cover", "set_cover_position", sent.append)
+    entry = await do_setup(subentries=[rule("Midday", 40)])
+    assert sent[-1].data["position"] == 40
+    hass.states.async_set(
+        COVER, "closing", {"current_position": 70, "supported_features": FEATURES}
+    )
+    await hass.services.async_call(
+        DOMAIN, "set_override", {"config_entry_id": entry.entry_id, "position": 10}, blocking=True
+    )
+    assert sent[-1].data["position"] == 10

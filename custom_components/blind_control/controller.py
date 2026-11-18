@@ -120,6 +120,9 @@ except ImportError:  # Home Assistant < 2026.x
 
 STORAGE_VERSION = 1
 MAX_ATTEMPTS = 3  # commands per cover and target before giving up
+# A cover within this many % of its target counts as delivered. Deliberately
+# independent of the (possibly wide) manual-detection tolerance.
+DELIVERY_TOLERANCE = 2
 MOVING_STATES = (STATE_OPENING, STATE_CLOSING)
 
 type BlindControlConfigEntry = ConfigEntry[BlindController]
@@ -563,13 +566,15 @@ class BlindController:
             positionable = bool(features & CoverEntityFeature.SET_POSITION)
             goal = target if positionable else (100 if target >= 50 else 0)
             current = cover_position(state)
-            if current is not None and abs(current - goal) <= self.tolerance:
+            if current is not None and abs(current - goal) <= DELIVERY_TOLERANCE:
                 del self._pending[entity_id]
                 self._attempts.pop(entity_id, None)
                 continue
-            if state.state in MOVING_STATES:
-                continue
             last, count = self._attempts.get(entity_id, (None, 0))
+            # A new target is sent right away, even mid-travel; retries wait
+            # until the cover has stopped.
+            if count and state.state in MOVING_STATES:
+                continue
             if last is not None and now - last < timedelta(seconds=COMMAND_GRACE):
                 continue
             if count >= MAX_ATTEMPTS:
@@ -623,6 +628,9 @@ class BlindController:
         if abs(position - target) <= self.tolerance:
             return True
         # Intermediate positions reported while travelling toward the target.
+        # A move that stops short and settles away from the target is treated
+        # as manual on purpose: usually someone pressed stop, and retrying
+        # would undo that.
         return (
             self.last_command_time is not None
             and dt_util.utcnow() - self.last_command_time < timedelta(seconds=COMMAND_GRACE)
@@ -651,10 +659,15 @@ class BlindController:
                 self._drive_pending()
             return
         if baseline is None or position == baseline:
+            if self._pending and self._started and old.state in MOVING_STATES:
+                self._drive_pending()
             return
         if not (self.detect_manual and self.enabled):
             return
         if self._is_ours(new, position, cover_position(old)):
+            # Settled after our own move: deliver a target that changed meanwhile.
+            if self._pending and self._started:
+                self._drive_pending()
             return
 
         user = f" by user {new.context.user_id}" if new.context.user_id else ""
