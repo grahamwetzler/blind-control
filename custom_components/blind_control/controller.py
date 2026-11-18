@@ -119,6 +119,8 @@ except ImportError:  # Home Assistant < 2026.x
     import voluptuous as vol  # type: ignore[no-redef]
 
 STORAGE_VERSION = 1
+# A cover that starts moving this soon after our command is moving because of it.
+OWNERSHIP_WINDOW = timedelta(seconds=30)
 MAX_ATTEMPTS = 3  # commands per cover and target before giving up
 # A cover within this many % of its target counts as delivered. Deliberately
 # independent of the (possibly wide) manual-detection tolerance.
@@ -255,6 +257,8 @@ class BlindController:
         self._last_sent: dict[str, datetime] = {}
         # Covers whose current movement was started by us; cleared on settle.
         self._owned: set[str] = set()
+        # Commands sent whose movement has not been observed yet.
+        self._awaiting: dict[str, datetime] = {}
 
         # Derived state
         self.decision: Decision | None = None
@@ -596,7 +600,7 @@ class BlindController:
                 continue
             self._attempts[entity_id] = (now, count + 1)
             self._last_sent[entity_id] = now
-            self._owned.add(entity_id)
+            self._awaiting[entity_id] = now
             context = Context()
             self._our_contexts.append(context.id)
             if positionable:
@@ -618,6 +622,7 @@ class BlindController:
             )
         except HomeAssistantError as err:
             LOGGER.warning("Failed to move %s: %s", data[ATTR_ENTITY_ID], err)
+            self._awaiting.pop(data[ATTR_ENTITY_ID], None)
 
     # ------------------------------------------------------- manual detection
 
@@ -651,13 +656,22 @@ class BlindController:
         entity_id = event.data["entity_id"]
         old, new = event.data["old_state"], event.data["new_state"]
         self._notify()  # cover positions are exposed as attributes
-        if new is None or new.state in MOVING_STATES:
+        if new is None:
             return
-        if old is not None and old.state in MOVING_STATES:
-            self._owned.discard(entity_id)  # the movement has ended
+        if new.state in MOVING_STATES:
+            # Own the movement only if we observably caused it.
+            sent = self._awaiting.pop(entity_id, None)
+            if (sent is not None and dt_util.utcnow() - sent <= OWNERSHIP_WINDOW) or (
+                new.context.id in self._our_contexts
+            ):
+                self._owned.add(entity_id)
+            return
         position = cover_position(new)
         if position is None:
-            return
+            return  # unavailable/unknown: keep ownership until a real stop
+        # A real stopped position: any movement (ours or not) has ended.
+        self._owned.discard(entity_id)
+        self._awaiting.pop(entity_id, None)
         # Compare with the last *settled* position: some covers report their
         # final position while still opening/closing.
         baseline = self._settled.get(entity_id)

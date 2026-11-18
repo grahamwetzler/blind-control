@@ -613,3 +613,39 @@ async def test_recent_command_does_not_own_a_later_user_move(hass: HomeAssistant
         DOMAIN, "set_override", {"config_entry_id": entry.entry_id, "position": 10}, blocking=True
     )
     assert len(sent) == 1
+
+
+async def test_ownership_requires_observed_movement(
+    hass: HomeAssistant, setup, freezer: FrozenDateTimeFactory
+) -> None:
+    """Regression: a command that produced no movement does not own a later user move."""
+    do_setup, _ = setup
+    hass.services.async_remove("cover", "set_cover_position")
+    sent: list[ServiceCall] = []
+    hass.services.async_register("cover", "set_cover_position", sent.append)
+    entry = await do_setup(subentries=[rule("Midday", 40)])
+    assert len(sent) == 1  # the cover never reacts
+    freezer.tick(timedelta(minutes=1))
+    attrs = {"supported_features": FEATURES}
+    hass.states.async_set(COVER, "closing", {**attrs, "current_position": 80}, context=Context())
+    await hass.services.async_call(
+        DOMAIN, "set_override", {"config_entry_id": entry.entry_id, "position": 10}, blocking=True
+    )
+    assert len(sent) == 1
+
+
+async def test_ownership_survives_unavailable_blip(hass: HomeAssistant, setup) -> None:
+    """Regression: a brief unavailable state mid-move keeps our ownership."""
+    do_setup, _ = setup
+    hass.services.async_remove("cover", "set_cover_position")
+    sent: list[ServiceCall] = []
+    hass.services.async_register("cover", "set_cover_position", sent.append)
+    entry = await do_setup(subentries=[rule("Midday", 40)])
+    attrs = {"supported_features": FEATURES}
+    hass.states.async_set(COVER, "closing", {**attrs, "current_position": 80}, context=Context())
+    hass.states.async_set(COVER, "unavailable", attrs)
+    hass.states.async_set(COVER, "closing", {**attrs, "current_position": 70}, context=Context())
+    await hass.services.async_call(
+        DOMAIN, "set_override", {"config_entry_id": entry.entry_id, "position": 10}, blocking=True
+    )
+    assert sent[-1].data["position"] == 10
