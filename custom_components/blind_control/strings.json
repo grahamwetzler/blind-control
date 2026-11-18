@@ -1,0 +1,510 @@
+{
+  "title": "Blind Control",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Blind Control",
+        "description": "Create a controller for one or more covers that move together (e.g. all shades on one window wall).",
+        "data": {
+          "name": "Name",
+          "covers": "Covers"
+        },
+        "data_description": {
+          "covers": "Covers controlled together."
+        }
+      },
+      "settings": {
+        "title": "Settings",
+        "sections": {
+          "positions": {
+            "name": "Positions",
+            "description": "Positions use Home Assistant's convention: 0% is closed, 100% is open.",
+            "data": {
+              "default_position": "Default position",
+              "min_position": "Minimum position",
+              "max_position": "Maximum position",
+              "min_delta": "Minimum change"
+            },
+            "data_description": {
+              "default_position": "Used when no rule, oversteer or sun control applies.",
+              "min_position": "Hard lower limit for every automatic position.",
+              "max_position": "Hard upper limit for every automatic position.",
+              "min_delta": "Smaller changes are not sent to the covers (except moving fully open/closed). Prevents constant small movements with sun tracking."
+            }
+          },
+          "sun": {
+            "name": "Sun control",
+            "description": "Shade the window while the sun shines into it.",
+            "data": {
+              "sun_mode": "Sun control mode",
+              "sun_position": "Shade position (restrict mode)",
+              "azimuth": "Window direction (azimuth)",
+              "azimuth_left": "Visible angle to the left",
+              "azimuth_right": "Visible angle to the right",
+              "min_elevation": "Minimum sun elevation",
+              "max_elevation": "Maximum sun elevation"
+            },
+            "data_description": {
+              "sun_mode": "Restrict: move to a fixed shade position while the sun is in the window. Maximize: keep the shade as open as possible while stopping direct sun beyond the floor distance.",
+              "azimuth": "Compass direction the window faces (north 0°, east 90°, south 180°, west 270°).",
+              "azimuth_left": "How far left of the window direction the sun can shine in (looking out).",
+              "azimuth_right": "How far right of the window direction the sun can shine in (looking out).",
+              "min_elevation": "Below this the sun is blocked, e.g. by buildings or trees.",
+              "max_elevation": "Above this the sun is blocked, e.g. by an overhang."
+            }
+          },
+          "window": {
+            "name": "Window geometry (maximize mode)",
+            "description": "Heights are measured from the floor.",
+            "data": {
+              "window_top": "Window top height",
+              "window_bottom": "Window bottom height",
+              "floor_length": "Allowed sun distance on the floor"
+            },
+            "data_description": {
+              "floor_length": "How far direct sunlight may reach into the room, measured from the window."
+            }
+          },
+          "override": {
+            "name": "Overrides",
+            "description": "Manual changes pause automatic control for a while.",
+            "data": {
+              "detect_manual": "Detect manual changes",
+              "override_duration": "Override duration",
+              "manual_priority": "Manual override priority",
+              "tolerance": "Position tolerance",
+              "update_interval": "Re-evaluation interval"
+            },
+            "data_description": {
+              "detect_manual": "Treat cover movements not made by Blind Control (wall switch, remote, app, dashboard) as a manual override.",
+              "override_duration": "How long manual overrides (and actions without a duration) last. 0 keeps them until cleared or reset by a rule.",
+              "manual_priority": "Rules with a higher priority than this win over manual overrides.",
+              "tolerance": "Reported positions this close to the commanded position are not treated as manual changes.",
+              "update_interval": "Maximum time between evaluations. Scheduled changes are always evaluated on time."
+            }
+          }
+        }
+      }
+    },
+    "error": {
+      "min_above_max": "The minimum position must not be above the maximum position.",
+      "min_elevation_above_max": "The minimum elevation must be below the maximum elevation.",
+      "window_bottom_above_top": "The window bottom must be below the window top."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Settings",
+        "data": {
+          "covers": "Covers"
+        },
+        "sections": {
+          "positions": {
+            "name": "Positions",
+            "description": "Positions use Home Assistant's convention: 0% is closed, 100% is open.",
+            "data": {
+              "default_position": "Default position",
+              "min_position": "Minimum position",
+              "max_position": "Maximum position",
+              "min_delta": "Minimum change"
+            },
+            "data_description": {
+              "default_position": "Used when no rule, oversteer or sun control applies.",
+              "min_position": "Hard lower limit for every automatic position.",
+              "max_position": "Hard upper limit for every automatic position.",
+              "min_delta": "Smaller changes are not sent to the covers (except moving fully open/closed). Prevents constant small movements with sun tracking."
+            }
+          },
+          "sun": {
+            "name": "Sun control",
+            "description": "Shade the window while the sun shines into it.",
+            "data": {
+              "sun_mode": "Sun control mode",
+              "sun_position": "Shade position (restrict mode)",
+              "azimuth": "Window direction (azimuth)",
+              "azimuth_left": "Visible angle to the left",
+              "azimuth_right": "Visible angle to the right",
+              "min_elevation": "Minimum sun elevation",
+              "max_elevation": "Maximum sun elevation"
+            },
+            "data_description": {
+              "sun_mode": "Restrict: move to a fixed shade position while the sun is in the window. Maximize: keep the shade as open as possible while stopping direct sun beyond the floor distance.",
+              "azimuth": "Compass direction the window faces (north 0°, east 90°, south 180°, west 270°).",
+              "azimuth_left": "How far left of the window direction the sun can shine in (looking out).",
+              "azimuth_right": "How far right of the window direction the sun can shine in (looking out).",
+              "min_elevation": "Below this the sun is blocked, e.g. by buildings or trees.",
+              "max_elevation": "Above this the sun is blocked, e.g. by an overhang."
+            }
+          },
+          "window": {
+            "name": "Window geometry (maximize mode)",
+            "description": "Heights are measured from the floor.",
+            "data": {
+              "window_top": "Window top height",
+              "window_bottom": "Window bottom height",
+              "floor_length": "Allowed sun distance on the floor"
+            },
+            "data_description": {
+              "floor_length": "How far direct sunlight may reach into the room, measured from the window."
+            }
+          },
+          "override": {
+            "name": "Overrides",
+            "description": "Manual changes pause automatic control for a while.",
+            "data": {
+              "detect_manual": "Detect manual changes",
+              "override_duration": "Override duration",
+              "manual_priority": "Manual override priority",
+              "tolerance": "Position tolerance",
+              "update_interval": "Re-evaluation interval"
+            },
+            "data_description": {
+              "detect_manual": "Treat cover movements not made by Blind Control (wall switch, remote, app, dashboard) as a manual override.",
+              "override_duration": "How long manual overrides (and actions without a duration) last. 0 keeps them until cleared or reset by a rule.",
+              "manual_priority": "Rules with a higher priority than this win over manual overrides.",
+              "tolerance": "Reported positions this close to the commanded position are not treated as manual changes.",
+              "update_interval": "Maximum time between evaluations. Scheduled changes are always evaluated on time."
+            }
+          }
+        }
+      }
+    },
+    "error": {
+      "min_above_max": "The minimum position must not be above the maximum position.",
+      "min_elevation_above_max": "The minimum elevation must be below the maximum elevation.",
+      "window_bottom_above_top": "The window bottom must be below the window top."
+    }
+  },
+  "config_subentries": {
+    "rule": {
+      "entry_type": "Rule",
+      "initiate_flow": {
+        "user": "Add rule"
+      },
+      "step": {
+        "user": {
+          "title": "Rule",
+          "description": "A rule applies during its time window, on the selected weekdays, while its conditions are met. Rules are checked in order; the first active Position rule wins.",
+          "data": {
+            "name": "Name",
+            "action": "Action",
+            "position": "Position",
+            "weekdays": "Weekdays",
+            "conditions": "Conditions",
+            "order": "Order",
+            "priority": "Priority",
+            "reset_override": "Clear overrides when the rule starts"
+          },
+          "data_description": {
+            "action": "Position sets an absolute position. Minimum/Maximum limit sun control, oversteer and default positions.",
+            "weekdays": "Leave empty for every day. For windows crossing midnight, the day the window starts counts.",
+            "conditions": "Optional Home Assistant conditions (all must be met).",
+            "order": "Lower numbers are checked first.",
+            "priority": "A Position rule with a priority higher than an override's priority wins over the override.",
+            "reset_override": "When the rule becomes active, any override is cleared (e.g. close at sunset even if someone opened the shade in the afternoon)."
+          },
+          "sections": {
+            "start": {
+              "name": "Start",
+              "data": {
+                "kind": "Type",
+                "time": "Time",
+                "offset": "Offset",
+                "not_before": "Not before",
+                "not_after": "Not after"
+              },
+              "data_description": {
+                "kind": "Fixed time or a sun event. Leave at None for no boundary (midnight).",
+                "time": "Only used for the Fixed time type.",
+                "offset": "Minutes added to the time (negative for earlier).",
+                "not_before": "Clamp: never earlier than this.",
+                "not_after": "Clamp: never later than this."
+              }
+            },
+            "end": {
+              "name": "End",
+              "data": {
+                "kind": "Type",
+                "time": "Time",
+                "offset": "Offset",
+                "not_before": "Not before",
+                "not_after": "Not after"
+              },
+              "data_description": {
+                "kind": "Fixed time or a sun event. Leave at None for no boundary (midnight).",
+                "time": "Only used for the Fixed time type.",
+                "offset": "Minutes added to the time (negative for earlier).",
+                "not_before": "Clamp: never earlier than this.",
+                "not_after": "Clamp: never later than this."
+              }
+            }
+          }
+        },
+        "reconfigure": {
+          "title": "Rule",
+          "description": "A rule applies during its time window, on the selected weekdays, while its conditions are met. Rules are checked in order; the first active Position rule wins.",
+          "data": {
+            "name": "Name",
+            "action": "Action",
+            "position": "Position",
+            "weekdays": "Weekdays",
+            "conditions": "Conditions",
+            "order": "Order",
+            "priority": "Priority",
+            "reset_override": "Clear overrides when the rule starts"
+          },
+          "data_description": {
+            "action": "Position sets an absolute position. Minimum/Maximum limit sun control, oversteer and default positions.",
+            "weekdays": "Leave empty for every day. For windows crossing midnight, the day the window starts counts.",
+            "conditions": "Optional Home Assistant conditions (all must be met).",
+            "order": "Lower numbers are checked first.",
+            "priority": "A Position rule with a priority higher than an override's priority wins over the override.",
+            "reset_override": "When the rule becomes active, any override is cleared (e.g. close at sunset even if someone opened the shade in the afternoon)."
+          },
+          "sections": {
+            "start": {
+              "name": "Start",
+              "data": {
+                "kind": "Type",
+                "time": "Time",
+                "offset": "Offset",
+                "not_before": "Not before",
+                "not_after": "Not after"
+              },
+              "data_description": {
+                "kind": "Fixed time or a sun event. Leave at None for no boundary (midnight).",
+                "time": "Only used for the Fixed time type.",
+                "offset": "Minutes added to the time (negative for earlier).",
+                "not_before": "Clamp: never earlier than this.",
+                "not_after": "Clamp: never later than this."
+              }
+            },
+            "end": {
+              "name": "End",
+              "data": {
+                "kind": "Type",
+                "time": "Time",
+                "offset": "Offset",
+                "not_before": "Not before",
+                "not_after": "Not after"
+              },
+              "data_description": {
+                "kind": "Fixed time or a sun event. Leave at None for no boundary (midnight).",
+                "time": "Only used for the Fixed time type.",
+                "offset": "Minutes added to the time (negative for earlier).",
+                "not_before": "Clamp: never earlier than this.",
+                "not_after": "Clamp: never later than this."
+              }
+            }
+          }
+        }
+      },
+      "error": {
+        "invalid_conditions": "The conditions are invalid.",
+        "time_required": "Enter a time when using the Fixed time type."
+      },
+      "abort": {
+        "reconfigure_successful": "Rule updated."
+      }
+    },
+    "oversteer": {
+      "entry_type": "Oversteer",
+      "initiate_flow": {
+        "user": "Add oversteer"
+      },
+      "step": {
+        "user": {
+          "title": "Oversteer",
+          "description": "Oversteer replaces sun control while its conditions are met, e.g. open when it is cloudy or close fully when it is hot.",
+          "data": {
+            "name": "Name",
+            "conditions": "Conditions",
+            "position": "Position",
+            "only_when_sun_in_window": "Only while the sun is in the window",
+            "order": "Order"
+          },
+          "data_description": {
+            "conditions": "Home Assistant conditions (all must be met), e.g. cloud coverage above 80%.",
+            "only_when_sun_in_window": "If off, the oversteer also applies while the sun is not in the window (whenever no Position rule is active).",
+            "order": "Lower numbers are checked first; the first match wins."
+          }
+        },
+        "reconfigure": {
+          "title": "Oversteer",
+          "description": "Oversteer replaces sun control while its conditions are met, e.g. open when it is cloudy or close fully when it is hot.",
+          "data": {
+            "name": "Name",
+            "conditions": "Conditions",
+            "position": "Position",
+            "only_when_sun_in_window": "Only while the sun is in the window",
+            "order": "Order"
+          },
+          "data_description": {
+            "conditions": "Home Assistant conditions (all must be met), e.g. cloud coverage above 80%.",
+            "only_when_sun_in_window": "If off, the oversteer also applies while the sun is not in the window (whenever no Position rule is active).",
+            "order": "Lower numbers are checked first; the first match wins."
+          }
+        }
+      },
+      "error": {
+        "invalid_conditions": "The conditions are invalid.",
+        "time_required": "Enter a time when using the Fixed time type."
+      },
+      "abort": {
+        "reconfigure_successful": "Oversteer updated."
+      }
+    }
+  },
+  "selector": {
+    "sun_mode": {
+      "options": {
+        "off": "Off",
+        "restrict": "Restrict (fixed shade position)",
+        "maximize": "Maximize light (sun tracking)"
+      }
+    },
+    "action": {
+      "options": {
+        "position": "Position",
+        "min": "Minimum",
+        "max": "Maximum"
+      }
+    },
+    "kind": {
+      "options": {
+        "none": "None",
+        "time": "Fixed time",
+        "dawn": "Dawn",
+        "sunrise": "Sunrise",
+        "noon": "Solar noon",
+        "sunset": "Sunset",
+        "dusk": "Dusk"
+      }
+    },
+    "weekdays": {
+      "options": {
+        "mon": "Monday",
+        "tue": "Tuesday",
+        "wed": "Wednesday",
+        "thu": "Thursday",
+        "fri": "Friday",
+        "sat": "Saturday",
+        "sun": "Sunday"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "status": {
+        "name": "Status",
+        "state": {
+          "disabled": "Disabled",
+          "override": "Override",
+          "rule": "Rule",
+          "oversteer": "Oversteer",
+          "sun": "Sun control",
+          "default": "Default"
+        }
+      },
+      "reason": {
+        "name": "Reason"
+      },
+      "target_position": {
+        "name": "Target position"
+      },
+      "next_action": {
+        "name": "Next action"
+      },
+      "next_action_summary": {
+        "name": "Next action summary"
+      },
+      "override_expires": {
+        "name": "Override expires"
+      },
+      "sun_shade_position": {
+        "name": "Sun shade position"
+      }
+    },
+    "binary_sensor": {
+      "sun_in_window": {
+        "name": "Sun in window"
+      },
+      "override_active": {
+        "name": "Override active"
+      }
+    },
+    "switch": {
+      "automation": {
+        "name": "Automation"
+      },
+      "sun_control": {
+        "name": "Sun control"
+      }
+    },
+    "button": {
+      "clear_override": {
+        "name": "Clear override"
+      },
+      "recalculate": {
+        "name": "Recalculate"
+      }
+    }
+  },
+  "exceptions": {
+    "invalid_entry": {
+      "message": "{entry_id} is not a Blind Control entry."
+    },
+    "entry_not_loaded": {
+      "message": "Blind Control '{title}' is not loaded."
+    }
+  },
+  "services": {
+    "set_override": {
+      "name": "Set override",
+      "description": "Move the covers to a position and pause automatic control.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Controller",
+          "description": "The Blind Control controller."
+        },
+        "position": {
+          "name": "Position",
+          "description": "Target position (0% closed, 100% open)."
+        },
+        "duration": {
+          "name": "Duration",
+          "description": "How long the override lasts. Defaults to the configured override duration; 0 lasts until cleared."
+        },
+        "priority": {
+          "name": "Priority",
+          "description": "Position rules with a higher priority win over this override. Defaults to the manual override priority."
+        },
+        "note": {
+          "name": "Note",
+          "description": "Free text shown in the reason."
+        }
+      }
+    },
+    "clear_override": {
+      "name": "Clear override",
+      "description": "Return to automatic control.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Controller",
+          "description": "The Blind Control controller."
+        }
+      }
+    },
+    "recalculate": {
+      "name": "Recalculate",
+      "description": "Re-evaluate and re-send the target position.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Controller",
+          "description": "The Blind Control controller."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "entity": {
+    "sensor": {
+      "status": {
+        "default": "mdi:roller-shade",
+        "state": {
+          "disabled": "mdi:pause-circle-outline",
+          "override": "mdi:hand-back-right",
+          "rule": "mdi:calendar-clock",
+          "oversteer": "mdi:weather-partly-cloudy",
+          "sun": "mdi:weather-sunny",
+          "default": "mdi:roller-shade"
+        }
+      },
+      "reason": { "default": "mdi:information-outline" },
+      "target_position": { "default": "mdi:roller-shade" },
+      "next_action": { "default": "mdi:clock-outline" },
+      "next_action_summary": { "default": "mdi:calendar-arrow-right" },
+      "override_expires": { "default": "mdi:timer-sand" },
+      "sun_shade_position": { "default": "mdi:sun-angle" }
+    },
+    "binary_sensor": {
+      "sun_in_window": {
+        "default": "mdi:weather-sunny-off",
+        "state": { "on": "mdi:weather-sunny" }
+      },
+      "override_active": {
+        "default": "mdi:hand-back-right-off",
+        "state": { "on": "mdi:hand-back-right" }
+      }
+    },
+    "switch": {
+      "automation": {
+        "default": "mdi:robot",
+        "state": { "off": "mdi:robot-off" }
+      },
+      "sun_control": {
+        "default": "mdi:sun-angle",
+        "state": { "off": "mdi:weather-sunny-off" }
+      }
+    },
+    "button": {
+      "clear_override": { "default": "mdi:restore" },
+      "recalculate": { "default": "mdi:refresh" }
+    }
+  },
+  "services": {
+    "set_override": { "service": "mdi:hand-back-right" },
+    "clear_override": { "service": "mdi:restore" },
+    "recalculate": { "service": "mdi:refresh" }
+  }
+}

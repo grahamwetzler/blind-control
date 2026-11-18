@@ -1,0 +1,41 @@
+set_override:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: blind_control
+    position:
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 100
+          unit_of_measurement: "%"
+          mode: slider
+    duration:
+      selector:
+        duration:
+    priority:
+      selector:
+        number:
+          min: 0
+          max: 100
+          mode: box
+    note:
+      selector:
+        text:
+clear_override:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: blind_control
+recalculate:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: blind_control
