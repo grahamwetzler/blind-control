@@ -253,6 +253,8 @@ class BlindController:
         self._attempts: dict[str, tuple[datetime, int]] = {}
         # When each cover was last commanded (survives target changes).
         self._last_sent: dict[str, datetime] = {}
+        # Covers whose current movement was started by us; cleared on settle.
+        self._owned: set[str] = set()
 
         # Derived state
         self.decision: Decision | None = None
@@ -570,14 +572,14 @@ class BlindController:
             if not moving and current is not None and abs(current - goal) <= DELIVERY_TOLERANCE:
                 del self._pending[entity_id]
                 self._attempts.pop(entity_id, None)
+                self._owned.discard(entity_id)
                 continue
             last, count = self._attempts.get(entity_id, (None, 0))
             if moving:
                 # Re-target mid-travel only if we started this movement: never
                 # interrupt someone moving the cover, and retries wait until
                 # the cover has stopped. Settling drives pending targets again.
-                sent = self._last_sent.get(entity_id)
-                if count or sent is None or now - sent > timedelta(seconds=COMMAND_GRACE):
+                if count or entity_id not in self._owned:
                     continue
             if last is not None and now - last < timedelta(seconds=COMMAND_GRACE):
                 continue
@@ -594,6 +596,7 @@ class BlindController:
                 continue
             self._attempts[entity_id] = (now, count + 1)
             self._last_sent[entity_id] = now
+            self._owned.add(entity_id)
             context = Context()
             self._our_contexts.append(context.id)
             if positionable:
@@ -650,6 +653,8 @@ class BlindController:
         self._notify()  # cover positions are exposed as attributes
         if new is None or new.state in MOVING_STATES:
             return
+        if old is not None and old.state in MOVING_STATES:
+            self._owned.discard(entity_id)  # the movement has ended
         position = cover_position(new)
         if position is None:
             return
@@ -658,36 +663,32 @@ class BlindController:
         baseline = self._settled.get(entity_id)
         self._settled[entity_id] = position
 
-        if old is None or old.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
-            # Came (back) online: deliver any target it missed.
-            if self._pending and self._started:
-                self._drive_pending()
-            return
-        if baseline is None or position == baseline:
-            if self._pending and self._started and old.state in MOVING_STATES:
-                self._drive_pending()
-            return
-        if not (self.detect_manual and self.enabled):
-            return
-        if self._is_ours(entity_id, new, position, cover_position(old)):
-            # Settled after our own move: deliver a target that changed meanwhile.
-            if self._pending and self._started:
-                self._drive_pending()
+        if (
+            old is not None
+            and old.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN)
+            and baseline is not None
+            and position != baseline
+            and self.detect_manual
+            and self.enabled
+            and not self._is_ours(entity_id, new, position, cover_position(old))
+        ):
+            user = f" by user {new.context.user_id}" if new.context.user_id else ""
+            LOGGER.info(
+                "%s: manual change of %s to %s%%%s detected",
+                self.entry.title,
+                entity_id,
+                position,
+                user,
+            )
+            self.set_override(
+                position, source=OverrideSource.MANUAL, note=f"{entity_id} moved{user}"
+            )
             return
 
-        user = f" by user {new.context.user_id}" if new.context.user_id else ""
-        LOGGER.info(
-            "%s: manual change of %s to %s%%%s detected",
-            self.entry.title,
-            entity_id,
-            position,
-            user,
-        )
-        self.set_override(
-            position,
-            source=OverrideSource.MANUAL,
-            note=f"{entity_id} moved{user}",
-        )
+        # Settled, came back online, or moved by us: deliver anything pending
+        # (e.g. a target that changed while the cover was moving).
+        if self._pending and self._started:
+            self._drive_pending()
 
     # ------------------------------------------------------------- overrides
 
