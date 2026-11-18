@@ -456,7 +456,7 @@
       "message": "{entry_id} is not a Blind Control entry."
     },
     "entry_not_loaded": {
-      "message": "Blind Control '{title}' is not loaded."
+      "message": "Blind Control {title} is not loaded."
     }
   },
   "services": {
