@@ -683,10 +683,12 @@ class BlindController:
             return  # connection blip: keep ownership until the cover reports again
         # Stopped (with or without a known position): any movement has ended.
         self._owned.discard(entity_id)
-        self._awaiting.discard(entity_id)
         position = cover_position(new)
         if position is None:
+            # 'unknown' may precede the movement of a command just sent; that
+            # claim stays bounded by OWNERSHIP_WINDOW.
             return
+        self._awaiting.discard(entity_id)
         # Compare with the last *settled* position: some covers report their
         # final position while still opening/closing.
         baseline = self._settled.get(entity_id)
