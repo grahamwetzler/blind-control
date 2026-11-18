@@ -35,12 +35,16 @@ from homeassistant.core import (
     callback,
 )
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import condition
+from homeassistant.helpers import condition, config_validation as cv
 from homeassistant.helpers.event import (
+    TrackTemplate,
+    TrackTemplateResultInfo,
     async_track_point_in_utc_time,
     async_track_state_change_event,
+    async_track_template_result,
 )
 from homeassistant.helpers.storage import Store
+from homeassistant.helpers.template import Template
 from homeassistant.util import dt as dt_util
 
 from .const import (
@@ -109,7 +113,14 @@ from .engine import (
     predict,
 )
 
+try:
+    import probatio as vol
+except ImportError:  # Home Assistant < 2026.x
+    import voluptuous as vol  # type: ignore[no-redef]
+
 STORAGE_VERSION = 1
+MAX_ATTEMPTS = 3  # commands per cover and target before giving up
+MOVING_STATES = (STATE_OPENING, STATE_CLOSING)
 
 type BlindControlConfigEntry = ConfigEntry[BlindController]
 
@@ -184,6 +195,17 @@ def build_config(entry: ConfigEntry) -> ControllerConfig:
     )
 
 
+def _find_templates(config: Any) -> list[Template]:
+    """Return every template in a (validated) condition config."""
+    if isinstance(config, Template):
+        return [config]
+    if isinstance(config, Mapping):
+        return [t for value in config.values() for t in _find_templates(value)]
+    if isinstance(config, list | tuple):
+        return [t for value in config for t in _find_templates(value)]
+    return []
+
+
 def cover_position(state: State | None) -> int | None:
     """Return a cover's position (0 closed - 100 open) from its state."""
     if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
@@ -224,6 +246,9 @@ class BlindController:
         self.last_commanded: int | None = None
         self.last_command_time: datetime | None = None
         self._prev_active: frozenset[str] | None = None
+        # Per cover target that has not been reached yet, and send attempts.
+        self._pending: dict[str, int] = {}
+        self._attempts: dict[str, tuple[datetime, int]] = {}
 
         # Derived state
         self.decision: Decision | None = None
@@ -240,6 +265,10 @@ class BlindController:
         self._listeners: list[CALLBACK_TYPE] = []
         self._unsubs: list[CALLBACK_TYPE] = []
         self._unsub_timer: CALLBACK_TYPE | None = None
+        self._template_info: TrackTemplateResultInfo | None = None
+        # Last position of each cover while it was not moving.
+        self._settled: dict[str, int] = {}
+        self._started = False
 
     # ------------------------------------------------------------------ setup
 
@@ -256,17 +285,36 @@ class BlindController:
                     self.override = Override.from_dict(ov)
                 except (KeyError, ValueError):
                     LOGGER.warning("Discarding invalid stored override: %s", ov)
+            self._pending = {
+                c: int(t) for c, t in (stored.get("pending") or {}).items() if c in self.covers
+            }
+            # Covers added to the group since the last run still need the target.
+            known = set(stored.get("covers") or self.covers)
+            manual = self.override is not None and self.override.source is OverrideSource.MANUAL
+            if self.last_commanded is not None and not manual:
+                for cover in self.covers:
+                    if cover not in known:
+                        self._pending[cover] = self.last_commanded
+
+        for cover in self.covers:
+            state = self.hass.states.get(cover)
+            if state is not None and state.state not in MOVING_STATES:
+                if (pos := cover_position(state)) is not None:
+                    self._settled[cover] = pos
 
         tracked: set[str] = set()
+        templates: list[Template] = []
         for sub_id, sub in self.entry.subentries.items():
             if not (conds := sub.data.get(CONF_CONDITIONS)):
                 continue
             try:
-                validated = await condition.async_validate_conditions_config(self.hass, list(conds))
+                validated = await condition.async_validate_conditions_config(
+                    self.hass, cv.CONDITIONS_SCHEMA(list(conds))
+                )
                 self._checkers[sub_id] = await condition.async_conditions_from_config(
                     self.hass, validated, LOGGER, f"{self.entry.title}: {sub.title}"
                 )
-            except HomeAssistantError as err:
+            except (HomeAssistantError, vol.Invalid) as err:
                 LOGGER.error(
                     "Invalid conditions in '%s' of '%s': %s; treating as not met",
                     sub.title,
@@ -276,6 +324,7 @@ class BlindController:
                 continue
             for cond in validated:
                 tracked |= condition.async_extract_entities(cond)
+                templates.extend(_find_templates(cond))
 
         tracked.discard("")
         if tracked:
@@ -289,15 +338,28 @@ class BlindController:
                 async_track_state_change_event(self.hass, self.covers, self._cover_changed)
             )
 
+        if templates:
+            # Entities referenced inside templates are not returned by
+            # async_extract_entities, so track the templates themselves.
+            self._template_info = async_track_template_result(
+                self.hass,
+                [TrackTemplate(tpl, None) for tpl in templates],
+                self._template_changed,
+            )
+
         if self.hass.is_running:
+            self._started = True
             self.evaluate("setup")
         else:
-            self.evaluate("setup", apply=False)
+            self.evaluate("setup")
+
+            @callback
+            def _on_started(_: Event) -> None:
+                self._started = True
+                self.evaluate("home_assistant_started")
+
             self._unsubs.append(
-                self.hass.bus.async_listen_once(
-                    EVENT_HOMEASSISTANT_STARTED,
-                    lambda _: self.evaluate("home_assistant_started"),
-                )
+                self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _on_started)
             )
 
     async def async_unload(self) -> None:
@@ -305,6 +367,9 @@ class BlindController:
         for unsub in self._unsubs:
             unsub()
         self._unsubs.clear()
+        if self._template_info is not None:
+            self._template_info.async_remove()
+            self._template_info = None
         if self._unsub_timer:
             self._unsub_timer()
             self._unsub_timer = None
@@ -324,6 +389,8 @@ class BlindController:
             "previously_active": sorted(self._prev_active)
             if self._prev_active is not None
             else None,
+            "pending": dict(self._pending),
+            "covers": list(self.covers),
         }
 
     @callback
@@ -395,7 +462,7 @@ class BlindController:
         self._prev_active = decision.active_rule_ids
         self.decision = decision
 
-        if apply:
+        if apply and self._started:
             self._apply(decision, force=force)
 
         baseline = (
@@ -450,56 +517,83 @@ class BlindController:
             return
         self.evaluate(f"state change: {event.data['entity_id']}")
 
+    @callback
+    def _template_changed(self, event: Event | None, updates: list[Any]) -> None:
+        if event is not None:  # None on the initial render
+            self.evaluate(f"template change: {event.data.get('entity_id')}")
+
     # ----------------------------------------------------------------- apply
 
     @callback
     def _apply(self, decision: Decision, *, force: bool) -> None:
         target = decision.position
-        if target is None:
+        if target is None:  # disabled: stop driving the covers
+            self._pending.clear()
             return
         if (
             decision.source is Source.OVERRIDE
             and decision.override is not None
             and decision.override.source is OverrideSource.MANUAL
         ):
-            # The covers are already where the user put them.
+            # Someone took over: leave every cover where it is.
             self.last_commanded = target
+            self._pending.clear()
             return
-        if not force and not is_move(self.config, self.last_commanded, target):
-            return
+        if force or is_move(self.config, self.last_commanded, target):
+            LOGGER.debug("%s: target %s%% (%s)", self.entry.title, target, decision.reason)
+            self.last_commanded = target
+            self.last_command_time = dt_util.utcnow()
+            self._pending = dict.fromkeys(self.covers, target)
+            self._attempts.clear()
+        self._drive_pending()
 
-        self.last_commanded = target
-        self.last_command_time = dt_util.utcnow()
-        for entity_id in self.covers:
+    @callback
+    def _drive_pending(self) -> None:
+        """Send the target to covers that have not reached it yet.
+
+        Covers that were unavailable, failed to move or were added to the group
+        are retried (after the travel grace period, at most MAX_ATTEMPTS times).
+        """
+        now = dt_util.utcnow()
+        for entity_id, target in list(self._pending.items()):
             state = self.hass.states.get(entity_id)
-            if state is None or state.state == STATE_UNAVAILABLE:
-                LOGGER.debug("%s unavailable, not moving it", entity_id)
+            if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
                 continue
+            features = int(state.attributes.get(ATTR_SUPPORTED_FEATURES, 0))
+            positionable = bool(features & CoverEntityFeature.SET_POSITION)
+            goal = target if positionable else (100 if target >= 50 else 0)
             current = cover_position(state)
-            if current is not None and abs(current - target) <= 1:
+            if current is not None and abs(current - goal) <= self.tolerance:
+                del self._pending[entity_id]
+                self._attempts.pop(entity_id, None)
                 continue
+            if state.state in MOVING_STATES:
+                continue
+            last, count = self._attempts.get(entity_id, (None, 0))
+            if last is not None and now - last < timedelta(seconds=COMMAND_GRACE):
+                continue
+            if count >= MAX_ATTEMPTS:
+                if count == MAX_ATTEMPTS:
+                    LOGGER.warning(
+                        "%s: %s did not reach %s%% after %s attempts; giving up",
+                        self.entry.title,
+                        entity_id,
+                        goal,
+                        count,
+                    )
+                    self._attempts[entity_id] = (now, count + 1)
+                continue
+            self._attempts[entity_id] = (now, count + 1)
+            self.last_command_time = now
             context = Context()
             self._our_contexts.append(context.id)
-            features = int(state.attributes.get(ATTR_SUPPORTED_FEATURES, 0))
-            if features & CoverEntityFeature.SET_POSITION:
-                service, data = (
-                    "set_cover_position",
-                    {
-                        ATTR_ENTITY_ID: entity_id,
-                        ATTR_POSITION: target,
-                    },
-                )
+            if positionable:
+                service = "set_cover_position"
+                data: dict[str, Any] = {ATTR_ENTITY_ID: entity_id, ATTR_POSITION: target}
             else:
-                service = "open_cover" if target >= 50 else "close_cover"
+                service = "open_cover" if goal else "close_cover"
                 data = {ATTR_ENTITY_ID: entity_id}
-            LOGGER.debug(
-                "%s: %s %s -> %s (%s)",
-                self.entry.title,
-                service,
-                entity_id,
-                target,
-                decision.reason,
-            )
+            LOGGER.debug("%s: %s %s -> %s", self.entry.title, service, entity_id, goal)
             self.hass.async_create_task(
                 self._async_call(service, data, context),
                 f"{DOMAIN} move {entity_id}",
@@ -515,7 +609,7 @@ class BlindController:
 
     # ------------------------------------------------------- manual detection
 
-    def _is_ours(self, old: State, new: State, position: int, old_position: int | None) -> bool:
+    def _is_ours(self, new: State, position: int, previous: int | None) -> bool:
         ctx = new.context
         if ctx.id in self._our_contexts or (
             ctx.parent_id is not None and ctx.parent_id in self._our_contexts
@@ -532,38 +626,49 @@ class BlindController:
         return (
             self.last_command_time is not None
             and dt_util.utcnow() - self.last_command_time < timedelta(seconds=COMMAND_GRACE)
-            and old_position is not None
-            and abs(position - target) < abs(old_position - target)
+            and previous is not None
+            and abs(position - target) < abs(previous - target)
         )
 
     @callback
     def _cover_changed(self, event: Event[EventStateChangedData]) -> None:
+        entity_id = event.data["entity_id"]
         old, new = event.data["old_state"], event.data["new_state"]
         self._notify()  # cover positions are exposed as attributes
-        if not (self.detect_manual and self.enabled) or old is None or new is None:
+        if new is None or new.state in MOVING_STATES:
             return
-        if old.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+        position = cover_position(new)
+        if position is None:
             return
-        if new.state in (STATE_OPENING, STATE_CLOSING):
+        # Compare with the last *settled* position: some covers report their
+        # final position while still opening/closing.
+        baseline = self._settled.get(entity_id)
+        self._settled[entity_id] = position
+
+        if old is None or old.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            # Came (back) online: deliver any target it missed.
+            if self._pending and self._started:
+                self._drive_pending()
             return
-        position, old_position = cover_position(new), cover_position(old)
-        if position is None or position == old_position:
+        if baseline is None or position == baseline:
             return
-        if self._is_ours(old, new, position, old_position):
+        if not (self.detect_manual and self.enabled):
+            return
+        if self._is_ours(new, position, cover_position(old)):
             return
 
         user = f" by user {new.context.user_id}" if new.context.user_id else ""
         LOGGER.info(
             "%s: manual change of %s to %s%%%s detected",
             self.entry.title,
-            event.data["entity_id"],
+            entity_id,
             position,
             user,
         )
         self.set_override(
             position,
             source=OverrideSource.MANUAL,
-            note=f"{event.data['entity_id']} moved{user}",
+            note=f"{entity_id} moved{user}",
         )
 
     # ------------------------------------------------------------- overrides

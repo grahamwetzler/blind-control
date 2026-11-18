@@ -67,6 +67,13 @@ no start or end applies all day.
   becomes a manual override. Blind Control tells its own movements apart using
   the HA context of its commands, the position tolerance, and intermediate
   positions while a commanded move is still travelling.
+- **Groups**: an override pauses the whole controller. A manual move of one
+  cover does **not** move the other covers in the group. They stay where they
+  are until the override ends, so adjusting one shade by hand never makes the
+  others jump. An override set with `blind_control.set_override` moves every
+  cover.
+- **Delivery**: a cover that was unavailable, didn't respond, or was just added
+  to the group gets the current target when it comes back (up to 3 attempts).
 - **Expiry**: after *Override duration* (0 = until cleared). The *Override
   expires* sensor shows when.
 - **Reset by rule**: a rule with *Clear overrides when the rule starts* clears

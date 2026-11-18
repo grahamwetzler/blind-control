@@ -17,7 +17,7 @@ from homeassistant.config_entries import (
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import section
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import condition, selector
+from homeassistant.helpers import condition, config_validation as cv, selector
 
 from .const import (
     CONF_ACTION,
@@ -312,7 +312,7 @@ async def _validate_conditions(hass: HomeAssistant, data: Mapping[str, Any]) -> 
     if not (conds := data.get(CONF_CONDITIONS)):
         return {}
     try:
-        await condition.async_validate_conditions_config(hass, list(conds))
+        await condition.async_validate_conditions_config(hass, cv.CONDITIONS_SCHEMA(list(conds)))
     except (HomeAssistantError, vol.Invalid):
         return {CONF_CONDITIONS: "invalid_conditions"}
     return {}

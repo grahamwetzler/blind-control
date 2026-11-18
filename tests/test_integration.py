@@ -389,3 +389,87 @@ async def test_reset_override_rule(
     assert hass.states.get("binary_sensor.living_room_override_active").state == "off"
     assert hass.states.get("sensor.living_room_status").state == "rule"
     assert calls[-1].data["position"] == 0
+
+
+async def test_unavailable_cover_gets_target_when_back(hass: HomeAssistant, setup) -> None:
+    """Regression: a cover unavailable at command time must be retried."""
+    do_setup, calls = setup
+    hass.states.async_set(COVER, "unavailable", {"supported_features": FEATURES})
+    await do_setup(subentries=[rule("Midday", 40)])
+    assert not calls
+    hass.states.async_set(COVER, "open", {"current_position": 100, "supported_features": FEATURES})
+    await hass.async_block_till_done()
+    assert len(calls) == 1
+    assert calls[0].data["position"] == 40
+    # Not treated as a manual override when it comes back.
+    assert hass.states.get("binary_sensor.living_room_override_active").state == "off"
+
+
+async def test_failed_move_is_retried(
+    hass: HomeAssistant, setup, freezer: FrozenDateTimeFactory
+) -> None:
+    """Regression: a command that did not move the cover is retried later."""
+    do_setup, _ = setup
+    hass.services.async_remove("cover", "set_cover_position")
+    stuck: list[ServiceCall] = []
+    hass.services.async_register("cover", "set_cover_position", stuck.append)
+    await do_setup(subentries=[rule("Midday", 40)])
+    assert len(stuck) == 1
+    for _ in range(5):
+        freezer.tick(timedelta(minutes=5))
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done()
+    assert len(stuck) == 3  # MAX_ATTEMPTS, then gives up
+
+
+async def test_added_cover_receives_current_target(hass: HomeAssistant, setup) -> None:
+    """Regression: a cover added to the group gets the current target."""
+    do_setup, calls = setup
+    entry = await do_setup(subentries=[rule("Midday", 40)])
+    other = "cover.kitchen"
+    hass.states.async_set(other, "open", {"current_position": 100, "supported_features": FEATURES})
+    hass.config_entries.async_update_entry(
+        entry, options={**entry.options, "covers": [COVER, other]}
+    )
+    await hass.async_block_till_done()
+    assert calls[-1].data == {"entity_id": other, "position": 40}
+
+
+async def test_manual_move_reported_while_opening(
+    hass: HomeAssistant, setup, freezer: FrozenDateTimeFactory
+) -> None:
+    """Regression: final position reported in the 'opening' state is still detected."""
+    do_setup, _ = setup
+    await do_setup(subentries=[rule("Midday", 40)])
+    freezer.tick(timedelta(minutes=10))
+    attrs = {"current_position": 90, "supported_features": FEATURES}
+    hass.states.async_set(COVER, "opening", attrs, context=Context())
+    hass.states.async_set(COVER, "open", attrs, context=Context())
+    await hass.async_block_till_done()
+    assert hass.states.get("binary_sensor.living_room_override_active").state == "on"
+    assert hass.states.get("sensor.living_room_target_position").state == "90"
+
+
+async def test_template_condition_tracks_referenced_entities(hass: HomeAssistant, setup) -> None:
+    """Regression: entities inside template conditions trigger re-evaluation."""
+    do_setup, calls = setup
+    hass.states.async_set("sensor.lux", "100")
+    await do_setup(
+        subentries=[
+            rule(
+                "Bright",
+                20,
+                conditions=[
+                    {
+                        "condition": "template",
+                        "value_template": "{{ states('sensor.lux') | int > 5000 }}",
+                    }
+                ],
+            )
+        ]
+    )
+    assert hass.states.get("sensor.living_room_status").state == "default"
+    hass.states.async_set("sensor.lux", "20000")
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.living_room_status").state == "rule"
+    assert calls[-1].data["position"] == 20
