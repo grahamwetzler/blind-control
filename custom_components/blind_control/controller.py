@@ -257,8 +257,8 @@ class BlindController:
         self._last_sent: dict[str, datetime] = {}
         # Covers whose current movement was started by us; cleared on settle.
         self._owned: set[str] = set()
-        # Commands sent whose movement has not been observed yet.
-        self._awaiting: dict[str, datetime] = {}
+        # Covers commanded (at _last_sent) whose movement is not observed yet.
+        self._awaiting: set[str] = set()
 
         # Derived state
         self.decision: Decision | None = None
@@ -600,7 +600,7 @@ class BlindController:
                 continue
             self._attempts[entity_id] = (now, count + 1)
             self._last_sent[entity_id] = now
-            self._awaiting[entity_id] = now
+            self._awaiting.add(entity_id)
             context = Context()
             self._our_contexts.append(context.id)
             if positionable:
@@ -611,26 +611,37 @@ class BlindController:
                 data = {ATTR_ENTITY_ID: entity_id}
             LOGGER.debug("%s: %s %s -> %s", self.entry.title, service, entity_id, goal)
             self.hass.async_create_task(
-                self._async_call(service, data, context),
+                self._async_call(service, data, context, now),
                 f"{DOMAIN} move {entity_id}",
             )
 
-    async def _async_call(self, service: str, data: dict[str, Any], context: Context) -> None:
+    async def _async_call(
+        self, service: str, data: dict[str, Any], context: Context, sent: datetime
+    ) -> None:
+        entity_id = data[ATTR_ENTITY_ID]
         try:
             await self.hass.services.async_call(
                 "cover", service, data, blocking=True, context=context
             )
-        except HomeAssistantError as err:
-            LOGGER.warning("Failed to move %s: %s", data[ATTR_ENTITY_ID], err)
-            self._awaiting.pop(data[ATTR_ENTITY_ID], None)
+        except Exception as err:  # any failure means no movement of ours
+            if isinstance(err, HomeAssistantError):
+                LOGGER.warning("Failed to move %s: %s", entity_id, err)
+            else:
+                LOGGER.exception("Unexpected error moving %s", entity_id)
+            # Drop the claim, unless a newer command has replaced it meanwhile.
+            if self._last_sent.get(entity_id) == sent:
+                self._awaiting.discard(entity_id)
+
+    def _is_our_context(self, ctx: Context) -> bool:
+        """Whether a state change was caused (directly or not) by our command."""
+        return ctx.id in self._our_contexts or (
+            ctx.parent_id is not None and ctx.parent_id in self._our_contexts
+        )
 
     # ------------------------------------------------------- manual detection
 
     def _is_ours(self, entity_id: str, new: State, position: int, previous: int | None) -> bool:
-        ctx = new.context
-        if ctx.id in self._our_contexts or (
-            ctx.parent_id is not None and ctx.parent_id in self._our_contexts
-        ):
+        if self._is_our_context(new.context):
             return True
         target = self.last_commanded
         if self.override is not None and self.override.source is OverrideSource.SERVICE:
@@ -660,18 +671,22 @@ class BlindController:
             return
         if new.state in MOVING_STATES:
             # Own the movement only if we observably caused it.
-            sent = self._awaiting.pop(entity_id, None)
-            if (sent is not None and dt_util.utcnow() - sent <= OWNERSHIP_WINDOW) or (
-                new.context.id in self._our_contexts
-            ):
+            awaited = entity_id in self._awaiting
+            self._awaiting.discard(entity_id)
+            sent = self._last_sent.get(entity_id)
+            if (
+                awaited and sent is not None and dt_util.utcnow() - sent <= OWNERSHIP_WINDOW
+            ) or self._is_our_context(new.context):
                 self._owned.add(entity_id)
             return
+        if new.state == STATE_UNAVAILABLE:
+            return  # connection blip: keep ownership until the cover reports again
+        # Stopped (with or without a known position): any movement has ended.
+        self._owned.discard(entity_id)
+        self._awaiting.discard(entity_id)
         position = cover_position(new)
         if position is None:
-            return  # unavailable/unknown: keep ownership until a real stop
-        # A real stopped position: any movement (ours or not) has ended.
-        self._owned.discard(entity_id)
-        self._awaiting.pop(entity_id, None)
+            return
         # Compare with the last *settled* position: some covers report their
         # final position while still opening/closing.
         baseline = self._settled.get(entity_id)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 
 from freezegun.api import FrozenDateTimeFactory
@@ -15,6 +16,7 @@ from custom_components.blind_control.const import DEFAULTS, DOMAIN
 from homeassistant.config_entries import ConfigSubentryData
 from homeassistant.core import Context, HomeAssistant, ServiceCall
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
 COVER = "cover.living_room"
@@ -645,6 +647,113 @@ async def test_ownership_survives_unavailable_blip(hass: HomeAssistant, setup) -
     hass.states.async_set(COVER, "closing", {**attrs, "current_position": 80}, context=Context())
     hass.states.async_set(COVER, "unavailable", attrs)
     hass.states.async_set(COVER, "closing", {**attrs, "current_position": 70}, context=Context())
+    await hass.services.async_call(
+        DOMAIN, "set_override", {"config_entry_id": entry.entry_id, "position": 10}, blocking=True
+    )
+    assert sent[-1].data["position"] == 10
+
+
+async def test_unknown_stop_ends_ownership(hass: HomeAssistant, setup) -> None:
+    """Regression: a cover that stops in 'unknown' no longer counts as moved by us."""
+    do_setup, _ = setup
+    hass.services.async_remove("cover", "set_cover_position")
+    sent: list[ServiceCall] = []
+    hass.services.async_register("cover", "set_cover_position", sent.append)
+    entry = await do_setup(subentries=[rule("Midday", 40)])
+    attrs = {"supported_features": FEATURES}
+    hass.states.async_set(
+        COVER, "closing", {**attrs, "current_position": 80}, context=sent[0].context
+    )
+    hass.states.async_set(COVER, "unknown", attrs, context=Context())
+    hass.states.async_set(COVER, "opening", {**attrs, "current_position": 85}, context=Context())
+    await hass.services.async_call(
+        DOMAIN, "set_override", {"config_entry_id": entry.entry_id, "position": 10}, blocking=True
+    )
+    assert len(sent) == 1
+
+
+@pytest.mark.parametrize("error", [HomeAssistantError("offline"), ValueError("bug")])
+async def test_failed_call_drops_claim(hass: HomeAssistant, setup, error: Exception) -> None:
+    """Regression: a failed command does not claim a user move right after it."""
+    do_setup, _ = setup
+    hass.services.async_remove("cover", "set_cover_position")
+    sent: list[ServiceCall] = []
+
+    async def failing(call: ServiceCall) -> None:
+        sent.append(call)
+        raise error
+
+    hass.services.async_register("cover", "set_cover_position", failing)
+    entry = await do_setup(subentries=[rule("Midday", 40)])
+    assert len(sent) == 1
+    attrs = {"supported_features": FEATURES}
+    hass.states.async_set(COVER, "closing", {**attrs, "current_position": 80}, context=Context())
+    await hass.services.async_call(
+        DOMAIN, "set_override", {"config_entry_id": entry.entry_id, "position": 10}, blocking=True
+    )
+    await hass.async_block_till_done()
+    assert len(sent) == 1
+
+
+async def test_stale_failure_keeps_newer_claim(
+    hass: HomeAssistant, setup, freezer: FrozenDateTimeFactory
+) -> None:
+    """Regression: a slow failing command does not drop the claim of a newer one."""
+    do_setup, _ = setup
+    hass.services.async_remove("cover", "set_cover_position")
+    sent: list[ServiceCall] = []
+    release = asyncio.Event()
+
+    async def handler(call: ServiceCall) -> None:
+        sent.append(call)
+        if call.data["position"] == 20:
+            await release.wait()
+            raise HomeAssistantError("timeout")
+
+    hass.services.async_register("cover", "set_cover_position", handler)
+    entry = await do_setup(subentries=[rule("Midday", 40)])
+
+    async def override(position: int) -> None:
+        await hass.services.async_call(
+            DOMAIN,
+            "set_override",
+            {"config_entry_id": entry.entry_id, "position": position},
+            blocking=True,
+        )
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+    await override(20)  # hangs, then fails
+    freezer.tick(timedelta(seconds=1))
+    await override(30)  # newer command
+    assert [c.data["position"] for c in sent] == [40, 20, 30]
+    release.set()
+    await hass.async_block_till_done()
+    # The newer command's movement shows up (fresh context, within the window).
+    attrs = {"supported_features": FEATURES}
+    hass.states.async_set(COVER, "closing", {**attrs, "current_position": 80}, context=Context())
+    await override(10)
+    await hass.async_block_till_done()
+    assert sent[-1].data["position"] == 10
+
+
+async def test_child_context_movement_is_owned(
+    hass: HomeAssistant, setup, freezer: FrozenDateTimeFactory
+) -> None:
+    """Regression: movement reported under a child of our context is ours."""
+    do_setup, _ = setup
+    hass.services.async_remove("cover", "set_cover_position")
+    sent: list[ServiceCall] = []
+    hass.services.async_register("cover", "set_cover_position", sent.append)
+    entry = await do_setup(subentries=[rule("Midday", 40)])
+    freezer.tick(timedelta(minutes=1))  # past the ownership window
+    attrs = {"supported_features": FEATURES}
+    hass.states.async_set(
+        COVER,
+        "closing",
+        {**attrs, "current_position": 80},
+        context=Context(parent_id=sent[0].context.id),
+    )
     await hass.services.async_call(
         DOMAIN, "set_override", {"config_entry_id": entry.entry_id, "position": 10}, blocking=True
     )
