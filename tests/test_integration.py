@@ -499,3 +499,58 @@ async def test_new_target_while_moving_is_sent(
         DOMAIN, "set_override", {"config_entry_id": entry.entry_id, "position": 10}, blocking=True
     )
     assert sent[-1].data["position"] == 10
+
+
+async def test_passing_new_target_while_moving_is_not_delivered(hass: HomeAssistant, setup) -> None:
+    """Regression: a cover moving past a new target still gets the new command."""
+    do_setup, _ = setup
+    hass.services.async_remove("cover", "set_cover_position")
+    sent: list[ServiceCall] = []
+    hass.services.async_register("cover", "set_cover_position", sent.append)
+    entry = await do_setup(subentries=[rule("Midday", 0)])
+    hass.states.async_set(
+        COVER, "closing", {"current_position": 51, "supported_features": FEATURES}
+    )
+    await hass.services.async_call(
+        DOMAIN, "set_override", {"config_entry_id": entry.entry_id, "position": 50}, blocking=True
+    )
+    assert sent[-1].data["position"] == 50
+
+
+async def test_user_movement_is_not_interrupted(
+    hass: HomeAssistant, setup, freezer: FrozenDateTimeFactory
+) -> None:
+    """Regression: a target change during a user's movement waits for it to settle."""
+    do_setup, _ = setup
+    hass.services.async_remove("cover", "set_cover_position")
+    sent: list[ServiceCall] = []
+    hass.services.async_register("cover", "set_cover_position", sent.append)
+    hass.states.async_set("input_boolean.away", "off")
+    await do_setup(
+        subentries=[
+            rule(
+                "Away",
+                0,
+                conditions=[
+                    {"condition": "state", "entity_id": "input_boolean.away", "state": "on"}
+                ],
+            )
+        ]
+    )
+    assert not sent  # default 100, cover already at 100
+    freezer.tick(timedelta(minutes=10))
+    hass.states.async_set(
+        COVER,
+        "closing",
+        {"current_position": 70, "supported_features": FEATURES},
+        context=Context(),
+    )
+    hass.states.async_set("input_boolean.away", "on")
+    await hass.async_block_till_done()
+    assert not sent  # user is moving it: don't interrupt
+    hass.states.async_set(
+        COVER, "open", {"current_position": 30, "supported_features": FEATURES}, context=Context()
+    )
+    await hass.async_block_till_done()
+    assert not sent
+    assert hass.states.get("binary_sensor.living_room_override_active").state == "on"

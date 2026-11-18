@@ -247,11 +247,12 @@ class BlindController:
         self.sun_enabled = True
         self.override: Override | None = None
         self.last_commanded: int | None = None
-        self.last_command_time: datetime | None = None
         self._prev_active: frozenset[str] | None = None
         # Per cover target that has not been reached yet, and send attempts.
         self._pending: dict[str, int] = {}
         self._attempts: dict[str, tuple[datetime, int]] = {}
+        # When each cover was last commanded (survives target changes).
+        self._last_sent: dict[str, datetime] = {}
 
         # Derived state
         self.decision: Decision | None = None
@@ -545,7 +546,6 @@ class BlindController:
         if force or is_move(self.config, self.last_commanded, target):
             LOGGER.debug("%s: target %s%% (%s)", self.entry.title, target, decision.reason)
             self.last_commanded = target
-            self.last_command_time = dt_util.utcnow()
             self._pending = dict.fromkeys(self.covers, target)
             self._attempts.clear()
         self._drive_pending()
@@ -566,15 +566,19 @@ class BlindController:
             positionable = bool(features & CoverEntityFeature.SET_POSITION)
             goal = target if positionable else (100 if target >= 50 else 0)
             current = cover_position(state)
-            if current is not None and abs(current - goal) <= DELIVERY_TOLERANCE:
+            moving = state.state in MOVING_STATES
+            if not moving and current is not None and abs(current - goal) <= DELIVERY_TOLERANCE:
                 del self._pending[entity_id]
                 self._attempts.pop(entity_id, None)
                 continue
             last, count = self._attempts.get(entity_id, (None, 0))
-            # A new target is sent right away, even mid-travel; retries wait
-            # until the cover has stopped.
-            if count and state.state in MOVING_STATES:
-                continue
+            if moving:
+                # Re-target mid-travel only if we started this movement: never
+                # interrupt someone moving the cover, and retries wait until
+                # the cover has stopped. Settling drives pending targets again.
+                sent = self._last_sent.get(entity_id)
+                if count or sent is None or now - sent > timedelta(seconds=COMMAND_GRACE):
+                    continue
             if last is not None and now - last < timedelta(seconds=COMMAND_GRACE):
                 continue
             if count >= MAX_ATTEMPTS:
@@ -589,7 +593,7 @@ class BlindController:
                     self._attempts[entity_id] = (now, count + 1)
                 continue
             self._attempts[entity_id] = (now, count + 1)
-            self.last_command_time = now
+            self._last_sent[entity_id] = now
             context = Context()
             self._our_contexts.append(context.id)
             if positionable:
@@ -614,7 +618,7 @@ class BlindController:
 
     # ------------------------------------------------------- manual detection
 
-    def _is_ours(self, new: State, position: int, previous: int | None) -> bool:
+    def _is_ours(self, entity_id: str, new: State, position: int, previous: int | None) -> bool:
         ctx = new.context
         if ctx.id in self._our_contexts or (
             ctx.parent_id is not None and ctx.parent_id in self._our_contexts
@@ -631,9 +635,10 @@ class BlindController:
         # A move that stops short and settles away from the target is treated
         # as manual on purpose: usually someone pressed stop, and retrying
         # would undo that.
+        sent = self._last_sent.get(entity_id)
         return (
-            self.last_command_time is not None
-            and dt_util.utcnow() - self.last_command_time < timedelta(seconds=COMMAND_GRACE)
+            sent is not None
+            and dt_util.utcnow() - sent < timedelta(seconds=COMMAND_GRACE)
             and previous is not None
             and abs(position - target) < abs(previous - target)
         )
@@ -664,7 +669,7 @@ class BlindController:
             return
         if not (self.detect_manual and self.enabled):
             return
-        if self._is_ours(new, position, cover_position(old)):
+        if self._is_ours(entity_id, new, position, cover_position(old)):
             # Settled after our own move: deliver a target that changed meanwhile.
             if self._pending and self._started:
                 self._drive_pending()
