@@ -864,3 +864,24 @@ async def test_manual_move_does_not_replace_higher_priority_override(
     assert len(calls) == n + 1
     assert calls[-1].data["position"] == 0
     assert hass.states.get(COVER).attributes["current_position"] == 0
+
+
+async def test_manual_move_replaces_manual_override_after_priority_change(
+    hass: HomeAssistant, setup, freezer: FrozenDateTimeFactory
+) -> None:
+    """Regression: lowering the manual priority doesn't lock in an older manual override."""
+    do_setup, calls = setup
+    entry = await do_setup(subentries=[rule("Midday", 40)])
+    attrs = {"supported_features": FEATURES}
+    freezer.tick(timedelta(minutes=10))
+    hass.states.async_set(COVER, "open", {**attrs, "current_position": 80}, context=Context())
+    await hass.async_block_till_done()
+    controller = entry.runtime_data
+    assert controller.override.position == 80
+    controller.manual_priority = 0  # as if the setting was lowered
+    freezer.tick(timedelta(minutes=1))
+    hass.states.async_set(COVER, "open", {**attrs, "current_position": 60}, context=Context())
+    await hass.async_block_till_done()
+    assert controller.override.position == 60
+    assert controller.override.priority == 0
+    assert len(calls) == 1

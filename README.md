@@ -86,7 +86,8 @@ no start or end applies all day.
     **ignored** (equal or higher replaces it), unless `force: true` is set.
   - A manual move during a higher-priority override is undone: the covers go
     back to the override's position. Example: an *Away* override at priority 50
-    can't be knocked out by a wall switch.
+    can't be knocked out by a wall switch. A new manual move always replaces an
+    earlier manual override.
   - `blind_control.clear_override` with a `priority` only clears an override of
     that priority or lower. Without one it always clears, as do the *Clear
     override* button and rules with *Clear overrides when the rule starts*.

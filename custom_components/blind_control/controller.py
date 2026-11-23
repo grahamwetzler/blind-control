@@ -746,7 +746,13 @@ class BlindController:
         position = max(0, min(100, int(position)))
         priority = self.manual_priority if priority is None else int(priority)
         active = self._active_override(now)
-        if active is not None and priority < active.priority and not force:
+        if (
+            active is not None
+            and priority < active.priority
+            and not force
+            # A new manual move always supersedes an earlier manual move.
+            and not (source is OverrideSource.MANUAL and active.source is OverrideSource.MANUAL)
+        ):
             LOGGER.info(
                 "%s: %s override to %s%% ignored: priority %s is below the active override's %s",
                 self.entry.title,
