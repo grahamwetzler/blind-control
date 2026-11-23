@@ -14,6 +14,7 @@ from homeassistant.helpers.typing import ConfigType
 from .const import (
     ATTR_CONFIG_ENTRY_ID,
     ATTR_DURATION,
+    ATTR_FORCE,
     ATTR_NOTE,
     CONF_POSITION,
     CONF_PRIORITY,
@@ -41,6 +42,13 @@ SET_OVERRIDE_SCHEMA = vol.Schema(
         vol.Optional(ATTR_DURATION): cv.positive_time_period,
         vol.Optional(CONF_PRIORITY): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
         vol.Optional(ATTR_NOTE): cv.string,
+        vol.Optional(ATTR_FORCE, default=False): cv.boolean,
+    }
+)
+CLEAR_OVERRIDE_SCHEMA = vol.Schema(
+    {
+        **_ENTRY_SCHEMA,
+        vol.Optional(CONF_PRIORITY): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
     }
 )
 ENTRY_SCHEMA = vol.Schema(_ENTRY_SCHEMA)
@@ -76,18 +84,21 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             duration=duration,
             priority=call.data.get(CONF_PRIORITY),
             note=call.data.get(ATTR_NOTE),
+            force=call.data[ATTR_FORCE],
         )
 
     @callback
     def clear_override(call: ServiceCall) -> None:
-        _controller(hass, call).clear_override()
+        _controller(hass, call).clear_override(call.data.get(CONF_PRIORITY))
 
     @callback
     def recalculate(call: ServiceCall) -> None:
         _controller(hass, call).evaluate("recalculate action", force=True)
 
     hass.services.async_register(DOMAIN, SERVICE_SET_OVERRIDE, set_override, SET_OVERRIDE_SCHEMA)
-    hass.services.async_register(DOMAIN, SERVICE_CLEAR_OVERRIDE, clear_override, ENTRY_SCHEMA)
+    hass.services.async_register(
+        DOMAIN, SERVICE_CLEAR_OVERRIDE, clear_override, CLEAR_OVERRIDE_SCHEMA
+    )
     hass.services.async_register(DOMAIN, SERVICE_RECALCULATE, recalculate, ENTRY_SCHEMA)
     return True
 

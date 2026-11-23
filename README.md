@@ -79,9 +79,19 @@ no start or end applies all day.
 - **Reset by rule**: a rule with *Clear overrides when the rule starts* clears
   any override when it becomes active. Example: close at sunset even if someone
   opened the shade in the afternoon.
-- **Priority**: manual overrides get the *Manual override priority* (default 1).
-  Rules have priority 0 by default, so overrides win unless you raise a rule's
-  priority.
+- **Priority** (Node-RED *importance*): manual overrides get the *Manual
+  override priority* (default 1). Rules have priority 0 by default, so
+  overrides win unless you raise a rule's priority.
+  - A new override with a **lower** priority than the active one is
+    **ignored** (equal or higher replaces it), unless `force: true` is set.
+  - A manual move during a higher-priority override is undone: the covers go
+    back to the override's position. Example: an *Away* override at priority 50
+    can't be knocked out by a wall switch.
+  - `blind_control.clear_override` with a `priority` only clears an override of
+    that priority or lower. Without one it always clears, as do the *Clear
+    override* button and rules with *Clear overrides when the rule starts*.
+  - Ignored overrides and clears are logged and shown in the *Override active*
+    sensor's `last_event` attribute.
 - Overrides, switch states and the last commanded position survive restarts.
 
 ## Entities
@@ -116,10 +126,26 @@ data:
   duration: { hours: 2 }   # optional; default = override duration, 0 = until cleared
   priority: 5              # optional; default = manual override priority
   note: Movie night        # optional; shown in the reason
+  force: false             # optional; replace even a higher-priority override
 ```
 
-`blind_control.clear_override` and `blind_control.recalculate` take only
-`config_entry_id`.
+```yaml
+action: blind_control.clear_override
+data:
+  config_entry_id: <pick the controller in the UI>
+  priority: 5              # optional; only clear an override of priority <= 5
+```
+
+`blind_control.recalculate` takes only `config_entry_id`.
+
+| Node-RED (sun-position blind-control) | Blind Control |
+|---|---|
+| `msg.payload` position with `msg.importance` | `set_override` with `priority` |
+| `msg.expire` / override expiry | `set_override` `duration` (or *Override duration*) |
+| lower importance than the active override → ignored | same; `force: true` to replace anyway |
+| `resetOverwrite` with importance | `clear_override` with `priority` |
+| rule importance beating an override | Position rule with a higher *priority* |
+| rule *reset overwrite* | rule option *Clear overrides when the rule starts* |
 
 ## Example setup
 

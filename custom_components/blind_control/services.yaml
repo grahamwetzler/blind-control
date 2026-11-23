@@ -25,6 +25,10 @@ set_override:
     note:
       selector:
         text:
+    force:
+      default: false
+      selector:
+        boolean:
 clear_override:
   fields:
     config_entry_id:
@@ -32,6 +36,12 @@ clear_override:
       selector:
         config_entry:
           integration: blind_control
+    priority:
+      selector:
+        number:
+          min: 0
+          max: 100
+          mode: box
 recalculate:
   fields:
     config_entry_id:

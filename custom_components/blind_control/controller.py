@@ -711,9 +711,11 @@ class BlindController:
                 position,
                 user,
             )
-            self.set_override(
+            if not self.set_override(
                 position, source=OverrideSource.MANUAL, note=f"{entity_id} moved{user}"
-            )
+            ):
+                # A higher-priority override holds: put the covers back.
+                self.evaluate("manual change outranked by override", force=True)
             return
 
         # Settled, came back online, or moved by us: deliver anything pending
@@ -732,29 +734,80 @@ class BlindController:
         duration: timedelta | None = None,
         priority: int | None = None,
         note: str | None = None,
-    ) -> None:
-        """Set an override and re-evaluate."""
+        force: bool = False,
+    ) -> bool:
+        """Set an override and re-evaluate.
+
+        Like importance in node-red-contrib-sun-position, an override with a
+        lower priority than the active one is ignored unless forced. Returns
+        whether the override was set.
+        """
         now = dt_util.now()
+        position = max(0, min(100, int(position)))
+        priority = self.manual_priority if priority is None else int(priority)
+        active = self._active_override(now)
+        if active is not None and priority < active.priority and not force:
+            LOGGER.info(
+                "%s: %s override to %s%% ignored: priority %s is below the active override's %s",
+                self.entry.title,
+                source.value,
+                position,
+                priority,
+                active.priority,
+            )
+            self.last_override_event = (
+                f"{source.value.capitalize()} override to {position}% (priority {priority}) "
+                f"ignored at {now.isoformat()}: active override has priority {active.priority}"
+            )
+            self._notify()
+            return False
         duration = self.override_duration if duration is None else duration
         self.override = Override(
-            position=max(0, min(100, int(position))),
+            position=position,
             source=source,
-            priority=self.manual_priority if priority is None else int(priority),
+            priority=priority,
             started=now,
             expires=now + duration if duration.total_seconds() > 0 else None,
             note=note,
         )
         self.last_override_event = f"Override set at {now.isoformat()}"
         self.evaluate(f"override ({source.value})", force=source is OverrideSource.SERVICE)
+        return True
+
+    def _active_override(self, now: datetime) -> Override | None:
+        """The current override, unless it has expired."""
+        o = self.override
+        if o is None or (o.expires is not None and o.expires <= now):
+            return None
+        return o
 
     @callback
-    def clear_override(self) -> None:
-        """Clear the override and return to automatic control."""
+    def clear_override(self, priority: int | None = None) -> bool:
+        """Clear the override and return to automatic control.
+
+        With a priority, only an override of that priority or lower is cleared.
+        Returns whether an override was cleared.
+        """
         if self.override is None:
-            return
+            return False
+        if priority is not None and priority < self.override.priority:
+            now = dt_util.now()
+            LOGGER.info(
+                "%s: clear ignored: priority %s is below the active override's %s",
+                self.entry.title,
+                priority,
+                self.override.priority,
+            )
+            self.last_override_event = (
+                f"Clear (priority {priority}) ignored at {now.isoformat()}: "
+                f"active override has priority {self.override.priority}"
+            )
+            self._notify()
+            return False
         self.override = None
         self.last_override_event = f"Override cleared at {dt_util.now().isoformat()}"
         self.evaluate("override cleared", force=True)
+        return True
 
     @callback
     def set_enabled(self, enabled: bool) -> None:

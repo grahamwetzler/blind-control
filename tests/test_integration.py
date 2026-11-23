@@ -774,3 +774,93 @@ async def test_unknown_before_movement_keeps_claim(hass: HomeAssistant, setup) -
         DOMAIN, "set_override", {"config_entry_id": entry.entry_id, "position": 10}, blocking=True
     )
     assert sent[-1].data["position"] == 10
+
+
+async def _override(hass: HomeAssistant, entry, **data) -> None:
+    await hass.services.async_call(
+        DOMAIN, "set_override", {"config_entry_id": entry.entry_id, **data}, blocking=True
+    )
+    await hass.async_block_till_done()
+
+
+async def _clear(hass: HomeAssistant, entry, **data) -> None:
+    await hass.services.async_call(
+        DOMAIN, "clear_override", {"config_entry_id": entry.entry_id, **data}, blocking=True
+    )
+    await hass.async_block_till_done()
+
+
+async def test_lower_priority_override_is_ignored(hass: HomeAssistant, setup) -> None:
+    """Like importance: a lower-priority override does not replace a higher one."""
+    do_setup, calls = setup
+    entry = await do_setup(subentries=[rule("Midday", 40)])
+    await _override(hass, entry, position=0, priority=50, note="Storm")
+    assert calls[-1].data["position"] == 0
+    await _override(hass, entry, position=80, priority=5)
+    assert calls[-1].data["position"] == 0
+    controller = entry.runtime_data
+    assert controller.override.priority == 50
+    assert "ignored" in controller.last_override_event
+    # Equal priority replaces it.
+    await _override(hass, entry, position=20, priority=50)
+    assert calls[-1].data["position"] == 20
+
+
+async def test_forced_override_replaces_higher_priority(hass: HomeAssistant, setup) -> None:
+    do_setup, calls = setup
+    entry = await do_setup(subentries=[rule("Midday", 40)])
+    await _override(hass, entry, position=0, priority=50)
+    await _override(hass, entry, position=80, priority=5, force=True)
+    assert calls[-1].data["position"] == 80
+    assert entry.runtime_data.override.priority == 5
+
+
+async def test_expired_override_does_not_block(
+    hass: HomeAssistant, setup, freezer: FrozenDateTimeFactory
+) -> None:
+    do_setup, calls = setup
+    entry = await do_setup(subentries=[rule("Midday", 40)])
+    await _override(hass, entry, position=0, priority=50, duration={"minutes": 5})
+    freezer.tick(timedelta(minutes=6))
+    await _override(hass, entry, position=80, priority=5)
+    assert calls[-1].data["position"] == 80
+
+
+async def test_clear_respects_priority(hass: HomeAssistant, setup) -> None:
+    """Like resetOverwrite with importance: a lower priority does not clear."""
+    do_setup, calls = setup
+    entry = await do_setup(subentries=[rule("Midday", 40)])
+    await _override(hass, entry, position=0, priority=50)
+    await _clear(hass, entry, priority=10)
+    assert entry.runtime_data.override is not None
+    assert calls[-1].data["position"] == 0
+    await _clear(hass, entry, priority=50)
+    assert entry.runtime_data.override is None
+    assert calls[-1].data["position"] == 40
+    # Without a priority, clearing always works.
+    await _override(hass, entry, position=0, priority=90)
+    await _clear(hass, entry)
+    assert entry.runtime_data.override is None
+
+
+async def test_manual_move_does_not_replace_higher_priority_override(
+    hass: HomeAssistant, setup, freezer: FrozenDateTimeFactory
+) -> None:
+    """A wall-switch move is a manual-priority override: below a priority-50 one it is undone."""
+    do_setup, calls = setup
+    entry = await do_setup(subentries=[rule("Midday", 40)])
+    await _override(hass, entry, position=0, priority=50, note="Away")
+    assert calls[-1].data["position"] == 0
+    n = len(calls)
+    freezer.tick(timedelta(minutes=10))
+    hass.states.async_set(
+        COVER, "open", {"current_position": 80, "supported_features": FEATURES}, context=Context()
+    )
+    await hass.async_block_till_done()
+    controller = entry.runtime_data
+    assert controller.override.priority == 50
+    assert controller.override.position == 0
+    assert "ignored" in controller.last_override_event
+    assert len(calls) == n + 1
+    assert calls[-1].data["position"] == 0
+    assert hass.states.get(COVER).attributes["current_position"] == 0

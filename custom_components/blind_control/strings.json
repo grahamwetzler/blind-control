@@ -478,11 +478,15 @@
         },
         "priority": {
           "name": "Priority",
-          "description": "Position rules with a higher priority win over this override. Defaults to the manual override priority."
+          "description": "Position rules with a higher priority win over this override. An override with a lower priority than the active one is ignored. Defaults to the manual override priority."
         },
         "note": {
           "name": "Note",
           "description": "Free text shown in the reason."
+        },
+        "force": {
+          "name": "Force",
+          "description": "Replace the active override even if it has a higher priority."
         }
       }
     },
@@ -493,6 +497,10 @@
         "config_entry_id": {
           "name": "Controller",
           "description": "The Blind Control controller."
+        },
+        "priority": {
+          "name": "Priority",
+          "description": "Only clear an override with this priority or lower. Leave empty to always clear."
         }
       }
     },
